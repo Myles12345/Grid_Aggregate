@@ -33,3 +33,13 @@ Coordinate Transformation: Updated to use MathTransform.Transform for transforma
 GeoJSON Export Option: This snippet lists results to the console, but you can adapt this to save GeoJSON using NetTopologySuite.IO.GeoJsonWriter if needed.
 Parallel Processing: Parallel.ForEach used for efficiency in counting points within each grid cell.
 This code should be compatible with current versions of NetTopologySuite and ProjNet4GeoAPI
+
+##################UPDATE###############################
+
+Explanation of Debugging Additions
+Transform Verification: Each transformed PU and DO coordinate is printed out to verify that they fall within reasonable Web Mercator values.
+Dynamic Bounding Box: Calculates the bounding box based on the transformed coordinates to ensure it encompasses all points.
+Grid Cell Coordinates: Each grid cell’s bounding box is printed to verify proper creation and size.
+Intersection Method and Point Count Debug: Intersects is used instead of Covers to ensure all interactions are captured, and counts are printed only for non-zero values to focus on cells with points.
+Final Grid Output: Each grid cell with non-zero counts for PU or DO is printed to confirm the correct counting process.
+These checks should help identify where points may not be counted as expected and confirm that transformations and grid generation are correct.
