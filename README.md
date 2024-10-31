@@ -25,3 +25,11 @@ Parallel Counting: Using Parallel.ForEach, we count pickup and dropoff points wi
 Filtering and Output: We retain only grid cells with non-zero pickup or dropoff counts and output the results.
 Visualization
 To visualize, export the gridResults to a format like GeoJSON, then use Leaflet or Mapbox to render the grid cells and display pickup and dropoff counts in a web map. This can be done by converting each cell to GeoJSON and specifying PUCount and DOCount as properties for styling in your map.
+
+###################UPDATE###############################
+
+Key Updates:
+Coordinate Transformation: Updated to use MathTransform.Transform for transformations with ProjNet4GeoAPI.
+GeoJSON Export Option: This snippet lists results to the console, but you can adapt this to save GeoJSON using NetTopologySuite.IO.GeoJsonWriter if needed.
+Parallel Processing: Parallel.ForEach used for efficiency in counting points within each grid cell.
+This code should be compatible with current versions of NetTopologySuite and ProjNet4GeoAPI
