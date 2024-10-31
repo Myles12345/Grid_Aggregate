@@ -2,8 +2,6 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using NetTopologySuite.Geometries;
-using NetTopologySuite.IO;
-using NetTopologySuite.Features;
 using ProjNet.CoordinateSystems;
 using ProjNet.CoordinateSystems.Transformations;
 using System.Threading.Tasks;
@@ -38,62 +36,71 @@ class Program
         var mercator = ProjectedCoordinateSystem.WebMercator;
         var coordinateTransform = new CoordinateTransformationFactory().CreateFromCoordinateSystems(wgs84, mercator);
 
-        // Transform coordinates to Web Mercator
+        // Transform coordinates to Web Mercator, with debug output
         puCoordinates = puCoordinates.Select(coord =>
-            new Coordinate(
-                coordinateTransform.MathTransform.Transform(new double[] { coord.X, coord.Y })[0],
-                coordinateTransform.MathTransform.Transform(new double[] { coord.X, coord.Y })[1]
-            )).ToList();
+            {
+                var transformedCoord = coordinateTransform.MathTransform.Transform(new double[] { coord.X, coord.Y });
+                Console.WriteLine($"Transformed PU Coordinate: X={transformedCoord[0]}, Y={transformedCoord[1]}");  // Debug: Check transformed coordinates
+                return new Coordinate(transformedCoord[0], transformedCoord[1]);
+            }).ToList();
 
         doCoordinates = doCoordinates.Select(coord =>
-            new Coordinate(
-                coordinateTransform.MathTransform.Transform(new double[] { coord.X, coord.Y })[0],
-                coordinateTransform.MathTransform.Transform(new double[] { coord.X, coord.Y })[1]
-            )).ToList();
+            {
+                var transformedCoord = coordinateTransform.MathTransform.Transform(new double[] { coord.X, coord.Y });
+                Console.WriteLine($"Transformed DO Coordinate: X={transformedCoord[0]}, Y={transformedCoord[1]}");  // Debug: Check transformed coordinates
+                return new Coordinate(transformedCoord[0], transformedCoord[1]);
+            }).ToList();
 
-        // Step 3: Create 500m x 500m grid
-        var boundingBox = GeometryFactory.Default.CreatePolygon(new[]
-        {
-            new Coordinate(lonMin, latMin),
-            new Coordinate(lonMax, latMin),
-            new Coordinate(lonMax, latMax),
-            new Coordinate(lonMin, latMax),
-            new Coordinate(lonMin, latMin)
-        }).EnvelopeInternal;
+        // Step 3: Define bounding box and dynamically adjust it based on transformed coordinates
+        double minX = puCoordinates.Concat(doCoordinates).Min(coord => coord.X);
+        double minY = puCoordinates.Concat(doCoordinates).Min(coord => coord.Y);
+        double maxX = puCoordinates.Concat(doCoordinates).Max(coord => coord.X);
+        double maxY = puCoordinates.Concat(doCoordinates).Max(coord => coord.Y);
 
+        var boundingBox = new Envelope(minX, maxX, minY, maxY);
+        Console.WriteLine($"Dynamic Bounding Box: {boundingBox}");  // Debug: Verify bounding box covers all points
+
+        // Step 4: Create 500m x 500m grid within bounding box and check grid cells
         var gridCells = new List<Polygon>();
         for (double x = boundingBox.MinX; x < boundingBox.MaxX; x += gridSize)
         {
             for (double y = boundingBox.MinY; y < boundingBox.MaxY; y += gridSize)
             {
-                gridCells.Add(GeometryFactory.Default.CreatePolygon(new[]
+                var cell = GeometryFactory.Default.CreatePolygon(new[]
                 {
                     new Coordinate(x, y),
                     new Coordinate(x + gridSize, y),
                     new Coordinate(x + gridSize, y + gridSize),
                     new Coordinate(x, y + gridSize),
                     new Coordinate(x, y)
-                }));
+                });
+                Console.WriteLine($"Grid Cell Created with Coordinates: {cell.Envelope}");  // Debug: Print grid cell envelope to verify
+                gridCells.Add(cell);
             }
         }
 
-        // Step 4: Count points within each grid cell (using parallel processing)
+        // Step 5: Count points within each grid cell using parallel processing and different intersection methods
         var puCounts = new Dictionary<Polygon, int>();
         var doCounts = new Dictionary<Polygon, int>();
 
         Parallel.ForEach(gridCells, cell =>
         {
-            int puCount = puCoordinates.Count(pu => cell.Covers(new Point(pu)));
-            int doCount = doCoordinates.Count(doCoord => cell.Covers(new Point(doCoord)));
+            // Using Intersects instead of Covers to verify coverage
+            int puCount = puCoordinates.Count(pu => cell.Intersects(new Point(pu)));
+            int doCount = doCoordinates.Count(doCoord => cell.Intersects(new Point(doCoord)));
 
             lock (puCounts)
             {
+                if (puCount > 0 || doCount > 0)  // Only report non-zero counts for debugging clarity
+                {
+                    Console.WriteLine($"Grid Cell has counts: PU={puCount}, DO={doCount}");  // Debug: Non-zero cell counts
+                }
                 puCounts[cell] = puCount;
                 doCounts[cell] = doCount;
             }
         });
 
-        // Step 5: Output results or write to GeoJSON
+        // Step 6: Output results or write to GeoJSON
         var gridResults = gridCells
             .Where(cell => puCounts[cell] > 0 || doCounts[cell] > 0)
             .Select(cell => new
