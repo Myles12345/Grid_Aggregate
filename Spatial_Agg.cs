@@ -2,22 +2,22 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using NetTopologySuite.Geometries;
-using NetTopologySuite.Operation.Union;
-using NetTopologySuite.Geometries.Prepared;
+using NetTopologySuite.IO;
+using NetTopologySuite.Features;
 using ProjNet.CoordinateSystems;
 using ProjNet.CoordinateSystems.Transformations;
-using Parallel = System.Threading.Tasks.Parallel;
+using System.Threading.Tasks;
 
 class Program
 {
     static void Main()
     {
         // Set up parameters
-        var nPoints = 5000;  // Adjusted for demonstration
+        int nPoints = 5000;  // Adjusted for demonstration; increase to 500,000 for full-scale
         double lonMin = -74.1, lonMax = -73.9, latMin = 40.7, latMax = 40.85;
         double gridSize = 500;  // 500m grid cells
-        
-        // Step 1: Generate random points within bounding box
+
+        // Generate random points for PU and DO within bounding box
         var random = new Random();
         List<Coordinate> puCoordinates = new List<Coordinate>();
         List<Coordinate> doCoordinates = new List<Coordinate>();
@@ -27,21 +27,31 @@ class Program
             double lon = lonMin + random.NextDouble() * (lonMax - lonMin);
             double lat = latMin + random.NextDouble() * (latMax - latMin);
             puCoordinates.Add(new Coordinate(lon, lat));
-            
+
             lon = lonMin + random.NextDouble() * (lonMax - lonMin);
             lat = latMin + random.NextDouble() * (latMax - latMin);
             doCoordinates.Add(new Coordinate(lon, lat));
         }
 
-        // Step 2: Transform coordinates to a projected CRS for accurate distance calculations (Web Mercator)
+        // Step 2: Define the CRS and transformation to Web Mercator (EPSG:3857)
         var wgs84 = GeographicCoordinateSystem.WGS84;
         var mercator = ProjectedCoordinateSystem.WebMercator;
-        var transform = new CoordinateTransformationFactory().CreateFromCoordinateSystems(wgs84, mercator);
+        var coordinateTransform = new CoordinateTransformationFactory().CreateFromCoordinateSystems(wgs84, mercator);
 
-        puCoordinates = puCoordinates.Select(c => transform.Transform(new Coordinate(c.X, c.Y))).ToList();
-        doCoordinates = doCoordinates.Select(c => transform.Transform(new Coordinate(c.X, c.Y))).ToList();
+        // Transform coordinates to Web Mercator
+        puCoordinates = puCoordinates.Select(coord =>
+            new Coordinate(
+                coordinateTransform.MathTransform.Transform(new double[] { coord.X, coord.Y })[0],
+                coordinateTransform.MathTransform.Transform(new double[] { coord.X, coord.Y })[1]
+            )).ToList();
 
-        // Step 3: Create 500m x 500m grid covering the bounding box
+        doCoordinates = doCoordinates.Select(coord =>
+            new Coordinate(
+                coordinateTransform.MathTransform.Transform(new double[] { coord.X, coord.Y })[0],
+                coordinateTransform.MathTransform.Transform(new double[] { coord.X, coord.Y })[1]
+            )).ToList();
+
+        // Step 3: Create 500m x 500m grid
         var boundingBox = GeometryFactory.Default.CreatePolygon(new[]
         {
             new Coordinate(lonMin, latMin),
@@ -83,7 +93,7 @@ class Program
             }
         });
 
-        // Step 5: Filter and Export as GeoJSON for Visualization
+        // Step 5: Output results or write to GeoJSON
         var gridResults = gridCells
             .Where(cell => puCounts[cell] > 0 || doCounts[cell] > 0)
             .Select(cell => new
@@ -94,7 +104,6 @@ class Program
             })
             .ToList();
 
-        // For each cell with counts, export data in GeoJSON format or visualize using your preferred method.
         foreach (var result in gridResults)
         {
             Console.WriteLine($"Grid Cell: {result.Geometry}; PU Count: {result.PUCount}; DO Count: {result.DOCount}");
