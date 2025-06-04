@@ -1,0 +1,13 @@
+{
+  "version": 2,
+  "dgSpecHash": "NrpBVLB7dwydKeMEG1pLNgpcF25uGHGL/jG9Jk0n5XNvmPSMZ93LakwKeCYLCxR5FZwiS7gqCFF8BX9vzpMz1Q==",
+  "success": true,
+  "projectFilePath": "/app/SpatialAggregation.csproj",
+  "expectedPackageFiles": [
+    "/home/swebot/.nuget/packages/nettopologysuite/2.5.0/nettopologysuite.2.5.0.nupkg.sha512",
+    "/home/swebot/.nuget/packages/projnet/2.0.0/projnet.2.0.0.nupkg.sha512",
+    "/home/swebot/.nuget/packages/system.memory/4.5.4/system.memory.4.5.4.nupkg.sha512",
+    "/home/swebot/.nuget/packages/system.numerics.vectors/4.5.0/system.numerics.vectors.4.5.0.nupkg.sha512"
+  ],
+  "logs": []
+}
