@@ -12,33 +12,40 @@ namespace SpatialAggregation
     // Domain types
     // -----------------------------------------------------------------------
 
-    /// <summary>Supply = driver becoming available; Demand = passenger requesting a ride.</summary>
+    /// <summary>
+    /// Supply = driver completing a dropoff (becoming available).
+    /// Demand = passenger originating a pickup request.
+    /// </summary>
     public enum EventType { Supply, Demand }
 
     /// <summary>
     /// Classification of a grid cell in a given hour bucket.
-    ///   NetSupply   – more available drivers than ride requests
-    ///   NetDemand   – more ride requests than available drivers
-    ///   Balanced    – supply equals demand (and above the activity threshold)
+    ///   NetSupply   – effective driver capacity exceeds ride requests
+    ///   NetDemand   – ride requests exceed effective driver capacity
+    ///   Balanced    – supply capacity equals demand (above activity threshold)
     ///   Unsupported – total activity below the minimum threshold; no reliable signal
     /// </summary>
     public enum ZoneStatus { Unsupported, NetSupply, NetDemand, Balanced }
 
-    /// <summary>A single rideshare event (driver available or passenger request) in projected space.</summary>
-    /// <param name="X">Web Mercator X (metres).</param>
-    /// <param name="Y">Web Mercator Y (metres).</param>
-    /// <param name="Hour">Hour of day [0–23].</param>
-    /// <param name="Type">Supply (driver) or Demand (passenger).</param>
+    /// <summary>A single rideshare event in projected (Web Mercator) space.</summary>
     public record GridEvent(double X, double Y, int Hour, EventType Type);
 
     /// <summary>Aggregated result for one cell/hour combination.</summary>
+    /// <param name="Supply">Raw driver events observed in this cell-hour.</param>
+    /// <param name="EffectiveSupply">
+    ///   Supply × driverCapacityFactor — the number of rides a driver pool
+    ///   can realistically complete in one hour (e.g., 2 trips per driver).
+    /// </param>
     public record HourlyZoneResult(
         int CellX, int CellY, int Hour,
-        int Supply, int Demand,
+        int Supply, int Demand, int EffectiveSupply,
         ZoneStatus Status)
     {
-        /// <summary>Positive = net driver surplus; negative = net passenger surplus.</summary>
-        public int Net => Supply - Demand;
+        /// <summary>
+        /// Positive = net driver surplus (more capacity than requests).
+        /// Negative = net passenger deficit (more requests than capacity).
+        /// </summary>
+        public int Net => EffectiveSupply - Demand;
     }
 
     // -----------------------------------------------------------------------
@@ -48,7 +55,7 @@ namespace SpatialAggregation
     public static class SpatialAggregator
     {
         // -------------------------------------------------------------------
-        // Point generation (unchanged – used for test data)
+        // Point generation — used for synthetic test data
         // -------------------------------------------------------------------
 
         public static List<Coordinate> GenerateRandomPoints(
@@ -68,9 +75,8 @@ namespace SpatialAggregation
         }
 
         // -------------------------------------------------------------------
-        // Coordinate transformation — parallelised; MathTransform is stateless
-        // for well-known projections (WGS84 → WebMercator) so parallel reads
-        // are safe.
+        // Coordinate transformation
+        // MathTransform for WGS84 → WebMercator is a pure function — thread-safe.
         // -------------------------------------------------------------------
 
         public static Coordinate[] TransformCoordinates(
@@ -119,31 +125,54 @@ namespace SpatialAggregation
             return new Envelope(minX, maxX, minY, maxY);
         }
 
+        /// <summary>Overload that derives the bounding box directly from a GridEvent list.</summary>
+        public static Envelope CalculateBoundingBox(IReadOnlyList<GridEvent> events)
+        {
+            double minX = double.MaxValue, minY = double.MaxValue;
+            double maxX = double.MinValue, maxY = double.MinValue;
+
+            foreach (var e in events)
+            {
+                if (e.X < minX) minX = e.X;
+                if (e.Y < minY) minY = e.Y;
+                if (e.X > maxX) maxX = e.X;
+                if (e.Y > maxY) maxY = e.Y;
+            }
+
+            return new Envelope(minX, maxX, minY, maxY);
+        }
+
         // -------------------------------------------------------------------
         // Core aggregation
         //
         // Algorithm:
         //   1. Pre-allocate int[24, gridWidth, gridHeight] arrays for supply
         //      and demand counts.
-        //   2. For each event, compute its cell index in O(1) using floor
-        //      arithmetic — no geometric loop, no Polygon.Contains().
+        //   2. Compute each event's cell index in O(1) using floor arithmetic —
+        //      no geometric loop, no Polygon.Contains().
         //   3. Write to the array with Interlocked.Increment — zero lock
         //      contention, full parallel throughput.
-        //   4. Single classification pass: emit only cell-hours with activity.
+        //   4. Classification pass: apply driverCapacityFactor to raw supply
+        //      counts, then emit ZoneStatus per cell-hour.
         // -------------------------------------------------------------------
 
         /// <param name="events">All supply and demand events in projected (metre) space.</param>
-        /// <param name="gridOrigin">Bounding envelope that defines the grid origin and extent.</param>
-        /// <param name="gridSize">Cell size in metres (e.g. 500).</param>
+        /// <param name="gridOrigin">Bounding envelope defining the grid origin and extent.</param>
+        /// <param name="gridSize">Cell edge length in metres (e.g. 500).</param>
+        /// <param name="driverCapacityFactor">
+        ///   Average number of ride trips one driver can complete per hour.
+        ///   Default 2.0 (one ~25-min trip + pickup time, repeated twice per hour).
+        ///   EffectiveSupply = rawSupply × driverCapacityFactor.
+        /// </param>
         /// <param name="minActivityThreshold">
-        ///   Minimum total events (supply + demand) required for a cell-hour to
-        ///   be classified as NetSupply / NetDemand / Balanced. Below this value
-        ///   the zone is marked Unsupported.
+        ///   Minimum total raw events (supply + demand) for a cell-hour to be
+        ///   classified. Below this it is marked Unsupported.
         /// </param>
         public static List<HourlyZoneResult> AggregateHourly(
             IReadOnlyList<GridEvent> events,
             Envelope gridOrigin,
             double gridSize,
+            double driverCapacityFactor = 2.0,
             int minActivityThreshold = 5)
         {
             int gridWidth  = (int)Math.Ceiling(gridOrigin.Width  / gridSize);
@@ -151,8 +180,6 @@ namespace SpatialAggregation
             double originX = gridOrigin.MinX;
             double originY = gridOrigin.MinY;
 
-            // Pre-allocate accumulators — indexed [hour, cellX, cellY].
-            // Default value of int[] elements is 0, so no explicit init needed.
             int[,,] supplyCounts = new int[24, gridWidth, gridHeight];
             int[,,] demandCounts = new int[24, gridWidth, gridHeight];
 
@@ -162,7 +189,7 @@ namespace SpatialAggregation
                 int cx = (int)Math.Floor((evt.X - originX) / gridSize);
                 int cy = (int)Math.Floor((evt.Y - originY) / gridSize);
 
-                // Guard against floating-point edge cases at the boundary.
+                // Guard floating-point boundary edge cases.
                 if (cx < 0 || cx >= gridWidth || cy < 0 || cy >= gridHeight) return;
 
                 if (evt.Type == EventType.Supply)
@@ -182,18 +209,21 @@ namespace SpatialAggregation
                 int demand = demandCounts[hr, cx, cy];
                 int total  = supply + demand;
 
-                if (total == 0) continue;   // completely empty cell-hour — skip
+                if (total == 0) continue;
+
+                // Apply capacity factor: each driver can serve ~2 rides/hour.
+                int effectiveSupply = (int)Math.Round(supply * driverCapacityFactor);
 
                 ZoneStatus status = total < minActivityThreshold
                     ? ZoneStatus.Unsupported
-                    : (supply - demand) switch
+                    : (effectiveSupply - demand) switch
                     {
                         > 0 => ZoneStatus.NetSupply,
                         < 0 => ZoneStatus.NetDemand,
                         _   => ZoneStatus.Balanced
                     };
 
-                results.Add(new HourlyZoneResult(cx, cy, hr, supply, demand, status));
+                results.Add(new HourlyZoneResult(cx, cy, hr, supply, demand, effectiveSupply, status));
             }
 
             return results;
